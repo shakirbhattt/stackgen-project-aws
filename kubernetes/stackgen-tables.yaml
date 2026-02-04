@@ -1,0 +1,99 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stackgen-tables
+  namespace: stackgen
+data:
+  init-tables.sql: |
+    -- StackGen ClickHouse Schema
+    -- Creates database and tables for sensor data
+    
+    CREATE DATABASE IF NOT EXISTS stackgen ON CLUSTER 'stackgen';
+    
+    -- Local ReplicatedMergeTree table
+    CREATE TABLE IF NOT EXISTS stackgen.readings_local ON CLUSTER 'stackgen'
+    (
+        timestamp DateTime,
+        sensor_id UInt32,
+        temperature Float32,
+        humidity Float32
+    )
+    ENGINE = ReplicatedMergeTree('/clickhouse/tables/{shard}/readings_local', '{replica}')
+    PARTITION BY toYYYYMM(timestamp)
+    ORDER BY (sensor_id, timestamp)
+    SETTINGS index_granularity = 8192;
+    
+    -- Distributed table over local tables
+    CREATE TABLE IF NOT EXISTS stackgen.readings ON CLUSTER 'stackgen'
+    (
+        timestamp DateTime,
+        sensor_id UInt32,
+        temperature Float32,
+        humidity Float32
+    )
+    ENGINE = Distributed('stackgen', stackgen, readings_local, rand());
+
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: stackgen-init-tables
+  namespace: stackgen
+spec:
+  template:
+    metadata:
+      labels:
+        app: stackgen-init
+    spec:
+      restartPolicy: OnFailure
+      
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-pool
+                    operator: In
+                    values:
+                      - data
+      
+      tolerations:
+        - key: stackgen-data
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      
+      initContainers:
+        - name: wait-for-clickhouse
+          image: busybox:1.36
+          command:
+            - sh
+            - -c
+            - |
+              echo "Waiting for ClickHouse to be ready..."
+              until nc -z chi-stackgen-cluster-stackgen-0-0 9000; do
+                echo "ClickHouse is unavailable - sleeping"
+                sleep 5
+              done
+              echo "ClickHouse is ready!"
+              sleep 10
+      
+      containers:
+        - name: init-tables
+          image: clickhouse/clickhouse-client:24.1
+          command:
+            - sh
+            - -c
+            - |
+              echo "Creating StackGen tables..."
+              clickhouse-client --host=chi-stackgen-cluster-stackgen-0-0 --port=9000 --multiquery < /scripts/init-tables.sql
+              echo "Tables created successfully!"
+          
+          volumeMounts:
+            - name: init-scripts
+              mountPath: /scripts
+      
+      volumes:
+        - name: init-scripts
+          configMap:
+            name: stackgen-tables

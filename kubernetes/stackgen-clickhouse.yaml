@@ -1,0 +1,339 @@
+apiVersion: "clickhouse.altinity.com/v1"
+kind: "ClickHouseInstallation"
+metadata:
+  name: "stackgen-cluster"
+  namespace: "stackgen"
+spec:
+  configuration:
+    zookeeper:
+      nodes:
+        - host: stackgen-keeper-0.stackgen-keeper-headless.stackgen.svc.cluster.local
+          port: 9181
+    
+    clusters:
+      - name: "stackgen"
+        layout:
+          shardsCount: 2
+          replicasCount: 2
+        
+        schemaPolicy:
+          replica: "None"
+          shard: "None"
+    
+    users:
+      default/password: ""
+      default/networks/ip: "::/0"
+      default/profile: "default"
+      default/quota: "default"
+      default/access_management: "1"
+    
+    profiles:
+      default/max_memory_usage: "10000000000"
+      default/use_uncompressed_cache: "0"
+      default/load_balancing: "random"
+    
+    quotas:
+      default/interval/duration: "3600"
+    
+    settings:
+      compression/case/method: "zstd"
+      disable_internal_dns_cache: "1"
+    
+    files:
+      config.d/storage.xml: |
+        <clickhouse>
+          <storage_configuration>
+            <disks>
+              <default>
+                <keep_free_space_bytes>1073741824</keep_free_space_bytes>
+              </default>
+            </disks>
+            <policies>
+              <default>
+                <volumes>
+                  <default>
+                    <disk>default</disk>
+                  </default>
+                </volumes>
+              </default>
+            </policies>
+          </storage_configuration>
+        </clickhouse>
+      
+      config.d/logger.xml: |
+        <clickhouse>
+          <logger>
+            <level>information</level>
+            <log>/var/log/clickhouse-server/clickhouse-server.log</log>
+            <errorlog>/var/log/clickhouse-server/clickhouse-server.err.log</errorlog>
+            <size>1000M</size>
+            <count>3</count>
+          </logger>
+        </clickhouse>
+
+  defaults:
+    templates:
+      podTemplate: stackgen-data-pod
+      dataVolumeClaimTemplate: data-volume
+      logVolumeClaimTemplate: log-volume
+  
+  templates:
+    podTemplates:
+      - name: stackgen-data-pod
+        spec:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: node-pool
+                        operator: In
+                        values:
+                          - data
+          
+          tolerations:
+            - key: stackgen-data
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+          
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:24.1
+              resources:
+                requests:
+                  memory: "4Gi"
+                  cpu: "1000m"
+                limits:
+                  memory: "8Gi"
+                  cpu: "2000m"
+              
+              livenessProbe:
+                httpGet:
+                  path: /ping
+                  port: 8123
+                initialDelaySeconds: 30
+                periodSeconds: 10
+                timeoutSeconds: 5
+              
+              readinessProbe:
+                httpGet:
+                  path: /ping
+                  port: 8123
+                initialDelaySeconds: 10
+                periodSeconds: 5
+                timeoutSeconds: 3
+      
+      - name: stackgen-keeper-pod
+        spec:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: node-pool
+                        operator: In
+                        values:
+                          - keeper
+          
+          tolerations:
+            - key: stackgen-keeper
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+          
+          containers:
+            - name: clickhouse-keeper
+              image: clickhouse/clickhouse-keeper:24.1
+              resources:
+                requests:
+                  memory: "512Mi"
+                  cpu: "500m"
+                limits:
+                  memory: "1Gi"
+                  cpu: "1000m"
+              
+              livenessProbe:
+                tcpSocket:
+                  port: 9181
+                initialDelaySeconds: 30
+                periodSeconds: 10
+              
+              readinessProbe:
+                tcpSocket:
+                  port: 9181
+                initialDelaySeconds: 10
+                periodSeconds: 5
+    
+    volumeClaimTemplates:
+      - name: data-volume
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: stackgen-storage
+          resources:
+            requests:
+              storage: 50Gi
+      
+      - name: log-volume
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: stackgen-storage
+          resources:
+            requests:
+              storage: 10Gi
+      
+      - name: keeper-data-volume
+        spec:
+          accessModes:
+            - ReadWriteOnce
+          storageClassName: stackgen-storage
+          resources:
+            requests:
+              storage: 20Gi
+    
+    serviceTemplates:
+      - name: stackgen-service
+        spec:
+          type: ClusterIP
+          ports:
+            - name: http
+              port: 8123
+              targetPort: 8123
+            - name: tcp
+              port: 9000
+              targetPort: 9000
+            - name: interserver
+              port: 9009
+              targetPort: 9009
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: stackgen-keeper
+  namespace: stackgen
+spec:
+  serviceName: stackgen-keeper-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: stackgen-keeper
+  template:
+    metadata:
+      labels:
+        app: stackgen-keeper
+        clickhouse.altinity.com/app: keeper
+        project: stackgen
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-pool
+                    operator: In
+                    values:
+                      - keeper
+      
+      tolerations:
+        - key: stackgen-keeper
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      
+      containers:
+        - name: clickhouse-keeper
+          image: clickhouse/clickhouse-keeper:24.1
+          ports:
+            - containerPort: 9181
+              name: keeper
+          
+          resources:
+            requests:
+              memory: "512Mi"
+              cpu: "500m"
+            limits:
+              memory: "1Gi"
+              cpu: "1000m"
+          
+          livenessProbe:
+            tcpSocket:
+              port: 9181
+            initialDelaySeconds: 30
+            periodSeconds: 10
+          
+          readinessProbe:
+            tcpSocket:
+              port: 9181
+            initialDelaySeconds: 10
+            periodSeconds: 5
+          
+          volumeMounts:
+            - name: keeper-data
+              mountPath: /var/lib/clickhouse
+            - name: keeper-config
+              mountPath: /etc/clickhouse-keeper/keeper_config.xml
+              subPath: keeper_config.xml
+      
+      volumes:
+        - name: keeper-config
+          configMap:
+            name: stackgen-keeper-config
+  
+  volumeClaimTemplates:
+    - metadata:
+        name: keeper-data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: stackgen-storage
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: stackgen-keeper-headless
+  namespace: stackgen
+spec:
+  clusterIP: None
+  selector:
+    app: stackgen-keeper
+  ports:
+    - port: 9181
+      targetPort: 9181
+      name: keeper
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stackgen-keeper-config
+  namespace: stackgen
+data:
+  keeper_config.xml: |
+    <clickhouse>
+      <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        
+        <coordination_settings>
+          <operation_timeout_ms>10000</operation_timeout_ms>
+          <session_timeout_ms>30000</session_timeout_ms>
+          <raft_logs_level>information</raft_logs_level>
+        </coordination_settings>
+        
+        <raft_configuration>
+          <server>
+            <id>1</id>
+            <hostname>stackgen-keeper-0.stackgen-keeper-headless.stackgen.svc.cluster.local</hostname>
+            <port>9234</port>
+          </server>
+        </raft_configuration>
+      </keeper_server>
+    </clickhouse>
