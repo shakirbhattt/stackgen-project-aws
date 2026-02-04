@@ -247,6 +247,4 @@ kubectl get svc -n stackgen
 - [Altinity Operator Docs](https://docs.altinity.com/clickhouse-operator/)
 - [AWS EKS Best Practices](https://aws.github.io/aws-eks-best-practices/)
 
----
 
-**License:** MIT  
