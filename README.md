@@ -219,21 +219,6 @@ cd terraform
 terraform destroy
 ```
 
-**⚠️ Important:** Run this to avoid AWS charges!
-
----
-
-## Estimated Costs
-
-**Monthly (AWS us-east-1):**
-- EKS Control Plane: $73
-- 4× t3.xlarge: $484
-- 1× t3.medium: $30
-- EBS Storage (300GB): $24
-- **Total: ~$611/month**
-
----
-
 ## Troubleshooting
 
 ### Pods Stuck in Pending
@@ -265,4 +250,3 @@ kubectl get svc -n stackgen
 ---
 
 **License:** MIT  
-**Author:** StackGen DevOps Team
