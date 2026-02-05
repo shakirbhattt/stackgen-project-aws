@@ -219,32 +219,5 @@ cd terraform
 terraform destroy
 ```
 
-## Troubleshooting
-
-### Pods Stuck in Pending
-```bash
-kubectl describe pod <pod-name> -n stackgen
-# Check: resources, taints, PVC binding
-```
-
-### Data Not Replicating
-```bash
-kubectl exec -n stackgen chi-stackgen-cluster-stackgen-0-0-0 -- \
-  clickhouse-client --query "SELECT * FROM system.replicas"
-```
-
-### Keeper Not Reachable
-```bash
-kubectl logs -n stackgen stackgen-keeper-0
-kubectl get svc -n stackgen
-```
-
----
-
-## Resources
-
-- [ClickHouse Documentation](https://clickhouse.com/docs)
-- [Altinity Operator Docs](https://docs.altinity.com/clickhouse-operator/)
-- [AWS EKS Best Practices](https://aws.github.io/aws-eks-best-practices/)
 
 
