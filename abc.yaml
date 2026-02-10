@@ -1,0 +1,196 @@
+apiVersion: clickhouse.altinity.com/v1
+kind: ClickHouseInstallation
+metadata:
+  name: cluster
+  namespace: clickhouse
+spec:
+  configuration:
+    zookeeper:
+      nodes:
+        - host: keeper-0.keeper-headless.clickhouse.svc.cluster.local
+          port: 9181
+    
+    clusters:
+      - name: main
+        layout:
+          shardsCount: 2
+          replicasCount: 2
+    
+    users:
+      default/password: ""
+      default/networks/ip: "::/0"
+    
+    settings:
+      compression/case/method: "zstd"
+
+  defaults:
+    templates:
+      podTemplate: data-pod
+      dataVolumeClaimTemplate: data
+      logVolumeClaimTemplate: logs
+  
+  templates:
+    podTemplates:
+      - name: data-pod
+        spec:
+          affinity:
+            nodeAffinity:
+              requiredDuringSchedulingIgnoredDuringExecution:
+                nodeSelectorTerms:
+                  - matchExpressions:
+                      - key: node-pool
+                        operator: In
+                        values:
+                          - data
+          
+          tolerations:
+            - key: data
+              operator: Equal
+              value: "true"
+              effect: NoSchedule
+          
+          containers:
+            - name: clickhouse
+              image: clickhouse/clickhouse-server:24.1
+              resources:
+                requests:
+                  # t3.xlarge has 16GB RAM, 4 vCPU
+                  # Allocate 12GB to ClickHouse, leave 4GB for system
+                  memory: "12Gi"
+                  cpu: "3000m"
+                limits:
+                  memory: "14Gi"
+                  cpu: "3500m"
+    
+    volumeClaimTemplates:
+      - name: data
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          storageClassName: gp3-retain
+          resources:
+            requests:
+              storage: 50Gi
+      
+      - name: logs
+        spec:
+          accessModes: ["ReadWriteOnce"]
+          storageClassName: gp3-retain
+          resources:
+            requests:
+              storage: 10Gi
+
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: keeper
+  namespace: clickhouse
+spec:
+  serviceName: keeper-headless
+  replicas: 1
+  selector:
+    matchLabels:
+      app: keeper
+  template:
+    metadata:
+      labels:
+        app: keeper
+    spec:
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: node-pool
+                    operator: In
+                    values:
+                      - keeper
+      
+      tolerations:
+        - key: keeper
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      
+      containers:
+        - name: keeper
+          image: clickhouse/clickhouse-keeper:24.1
+          ports:
+            - containerPort: 9181
+              name: client
+          
+          resources:
+            requests:
+              # t3.medium has 4GB RAM, 2 vCPU
+              # Allocate 2GB to Keeper, leave 2GB for system
+              memory: "2Gi"
+              cpu: "1000m"
+            limits:
+              memory: "3Gi"
+              cpu: "1500m"
+          
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/clickhouse
+            - name: config
+              mountPath: /etc/clickhouse-keeper/keeper_config.xml
+              subPath: keeper_config.xml
+      
+      volumes:
+        - name: config
+          configMap:
+            name: keeper-config
+  
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3-retain
+        resources:
+          requests:
+            storage: 20Gi
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keeper-headless
+  namespace: clickhouse
+spec:
+  clusterIP: None
+  selector:
+    app: keeper
+  ports:
+    - port: 9181
+      name: client
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keeper-config
+  namespace: clickhouse
+data:
+  keeper_config.xml: |
+    <clickhouse>
+      <keeper_server>
+        <tcp_port>9181</tcp_port>
+        <server_id>1</server_id>
+        <log_storage_path>/var/lib/clickhouse/coordination/log</log_storage_path>
+        <snapshot_storage_path>/var/lib/clickhouse/coordination/snapshots</snapshot_storage_path>
+        
+        <coordination_settings>
+          <operation_timeout_ms>10000</operation_timeout_ms>
+          <session_timeout_ms>30000</session_timeout_ms>
+        </coordination_settings>
+        
+        <raft_configuration>
+          <server>
+            <id>1</id>
+            <hostname>keeper-0.keeper-headless.clickhouse.svc.cluster.local</hostname>
+            <port>9234</port>
+          </server>
+        </raft_configuration>
+      </keeper_server>
+    </clickhouse>
